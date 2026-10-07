@@ -1,71 +1,100 @@
 const std = @import("std");
-const Io = std.Io;
-
 const gitz = @import("gitz");
+const clap = @import("clap");
+const init = @import("./init.zig");
 
-pub fn main(init: std.process.Init) !void {
-    // Prints to stderr, unbuffered, ignoring potential errors.
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+const Io = std.Io;
+const SubCommands = enum {
+    init,
+    // @"hash-object",
+};
 
-    // This is appropriate for anything that lives as long as the process.
-    const arena: std.mem.Allocator = init.arena.allocator();
+const main_params = clap.parseParamsComptime(
+    \\-h, --help  Display this help and exit.
+    \\<command>
+    \\
+);
+const main_parsers = .{
+    .command = clap.parsers.enumeration(SubCommands),
+};
+pub const MainArgs = clap.ResultEx(clap.Help, &main_params, main_parsers);
 
-    // Accessing command line arguments:
-    const args = try init.minimal.args.toSlice(arena);
-    for (args) |arg| {
-        std.log.info("arg: {s}", .{arg});
+const help_msg =
+    \\ [-v | --version] [-h | --help] <command> args
+    \\
+    \\ These are common Git commands used in various situations:
+    \\ 
+    \\ start a working area
+    // \\    clone      Clone a repository into a new directory
+    \\    init       Create an empty Git repository or reinitialize an existing one
+    // \\ 
+    // \\ work on the current change
+    // \\    add        Add file contents to the index
+    // \\    mv         Move or rename a file, a directory, or a symlink
+    // \\    restore    Restore working tree files
+    // \\    rm         Remove files from the working tree and from the index
+    // \\ 
+    // \\ examine the history and state
+    // \\    bisect     Use binary search to find the commit that introduced a bug
+    // \\    diff       Show changes between commits, commit and working tree, etc
+    // \\    grep       Print lines matching a pattern
+    // \\    log        Show commit logs
+    // \\    show       Show various types of objects
+    // \\    status     Show the working tree status
+    // \\ 
+    // \\ grow, mark and tweak your common history
+    // \\    backfill   Download missing objects in a partial clone
+    // \\    branch     List, create, or delete branches
+    // \\    commit     Record changes to the repository
+    // \\    history    EXPERIMENTAL: Rewrite history
+    // \\    merge      Join two or more development histories together
+    // \\    rebase     Reapply commits on top of another base tip
+    // \\    reset      Set `HEAD` or the index to a known state
+    // \\    switch     Switch branches
+    // \\    tag        Create, list, delete or verify tags
+    // \\ 
+    // \\ collaborate (see also: git help workflows)
+    // \\    fetch      Download objects and refs from another repository
+    // \\    pull       Fetch from and integrate with another repository or a local branch
+    // \\    push       Update remote refs along with associated objects
+    \\
+;
+
+fn print_help(exe_name: []const u8, io: std.Io) !void {
+    const stdout = std.Io.File.stdout();
+    try stdout.writeStreamingAll(io, exe_name);
+    try stdout.writeStreamingAll(io, " ");
+    try stdout.writeStreamingAll(io, help_msg);
+}
+
+pub fn main(in: std.process.Init) !void {
+    var iter = try in.minimal.args.iterateAllocator(in.gpa);
+    defer iter.deinit();
+
+    const exe_name = std.fs.path.basename(iter.next() orelse unreachable);
+
+    var diag = clap.Diagnostic{};
+    var res = clap.parseEx(clap.Help, &main_params, main_parsers, &iter, .{
+        .diagnostic = &diag,
+        .allocator = in.gpa,
+        .terminating_positional = 0,
+    }) catch |err| {
+        try diag.reportToFile(in.io, .stderr(), err);
+        return err;
+    };
+    defer res.deinit();
+
+    if (res.args.help != 0) {
+        try print_help(exe_name, in.io);
+        return;
     }
 
-    // In order to do I/O operations need an `Io` instance.
-    const io = init.io;
-
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    const stdout_writer = &stdout_file_writer.interface;
-
-    try gitz.printAnotherMessage(stdout_writer);
-
-    try stdout_writer.flush(); // Don't forget to flush!
-}
-
-test "simple test" {
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(i32) = .empty;
-    defer list.deinit(gpa); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(gpa, 42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-test "fuzz example" {
-    try std.testing.fuzz({}, testOne, .{});
-}
-
-fn testOne(context: void, smith: *std.testing.Smith) !void {
-    _ = context;
-    // Try command `zig build test --fuzz -Doptimize=ReleaseFast` to see if it manages to fail this test case!
-
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(gpa);
-    while (!smith.eos()) switch (smith.value(enum { add_data, dup_data })) {
-        .add_data => {
-            const slice = try list.addManyAsSlice(gpa, smith.value(u4));
-            smith.bytes(slice);
-        },
-        .dup_data => {
-            if (list.items.len == 0) continue;
-            if (list.items.len > std.math.maxInt(u32)) return error.SkipZigTest;
-            const len = smith.valueRangeAtMost(u32, 1, @min(32, list.items.len));
-            const off = smith.valueRangeAtMost(u32, 0, @intCast(list.items.len - len));
-            try list.appendSlice(gpa, list.items[off..][0..len]);
-            try std.testing.expectEqualSlices(
-                u8,
-                list.items[off..][0..len],
-                list.items[list.items.len - len ..],
-            );
-        },
+    const command = res.positionals[0] orelse {
+        try print_help(exe_name, in.io);
+        return error.MissingCommand;
     };
+    switch (command) {
+        .init => try init.main(in.io, in.gpa, &iter),
+        // .@"hash-object" => try init.main(in.io, in.gpa, &iter, res),
+    }
 }

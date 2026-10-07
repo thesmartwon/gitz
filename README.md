@@ -1,7 +1,7 @@
 # gitz
 
-Git with zero system dependencies. Configure your own FS, HTTP, and random at
-build and run time.
+Git library and CLI with zero system dependencies. Configure your own FS, HTTP,
+and random at build and run time.
 
 ## Why?
 
