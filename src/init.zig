@@ -1,22 +1,28 @@
 const std = @import("std");
 const clap = @import("clap");
+const Repo = @import("./repo.zig");
+
+const params = clap.parseParamsComptime(
+    \\-h, --help                 Display this help and exit.
+    // \\--bare                     Create a bare repository.
+    // \\--object-format <oformat>  Add the two numbers
+    // \\--ref-format    <rformat>  Subtract the two numbers
+    // \\-b, --initial-branch <str>
+    \\<directory>
+    \\
+);
+const parsers = .{
+    .directory = clap.parsers.string,
+};
+pub const Args = clap.ResultEx(clap.Help, &params, &parsers);
 
 pub fn main(
     io: std.Io,
     gpa: std.mem.Allocator,
     iter: *std.process.Args.Iterator,
 ) !void {
-    const params = comptime clap.parseParamsComptime(
-        \\-h, --help  Display this help and exit.
-        \\-a, --add   Add the two numbers
-        \\-s, --sub   Subtract the two numbers
-        \\<isize>
-        \\<isize>
-        \\
-    );
-
     var diag = clap.Diagnostic{};
-    var res = clap.parseEx(clap.Help, &params, clap.parsers.default, iter, .{
+    var res = clap.parseEx(clap.Help, &params, &parsers, iter, .{
         .diagnostic = &diag,
         .allocator = gpa,
     }) catch |err| {
@@ -25,15 +31,18 @@ pub fn main(
     };
     defer res.deinit();
 
-    if (res.args.help != 0) {
-        std.debug.print("--help\n", .{});
+    if (res.args.help != 0 or res.positionals.len > 1) {
+        try clap.helpToFile(io, .stderr(), clap.Help, &params, .{});
         return;
     }
 
-    const a = res.positionals[0] orelse return error.MissingArg1;
-    const b = res.positionals[1] orelse return error.MissingArg1;
-    if (res.args.add != 0)
-        std.debug.print("added: {}\n", .{a + b});
-    if (res.args.sub != 0)
-        std.debug.print("subtracted: {}\n", .{a - b});
+    const repo = try Repo.init(io, gpa, res);
+    defer repo.deinit(gpa);
+
+    const stdout = std.Io.File.stdout();
+    // TODO: use realpath like git if supported
+    // const realpath = std.Io.Dir.realPathFile();
+    try stdout.writeStreamingAll(io, "Initialized empty Git repository in ");
+    try stdout.writeStreamingAll(io, repo.git_dir);
+    try stdout.writeStreamingAll(io, "\n");
 }
