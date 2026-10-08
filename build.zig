@@ -23,15 +23,16 @@ pub fn build(b: *std.Build) void {
 
     const clap = b.dependency("clap", .{});
     exe.root_module.addImport("clap", clap.module("clap"));
+    const ini = b.dependency("zigini", .{});
+    exe.root_module.addImport("ini", ini.module("zigini"));
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
 
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+
+    if (b.args) |args| run_cmd.addArgs(args);
     // run_cmd.addPassthruArgs();
 
     const mod_tests = b.addTest(.{

@@ -2,11 +2,14 @@ const std = @import("std");
 const gitz = @import("gitz");
 const clap = @import("clap");
 const init = @import("./init.zig");
+const config = @import("./config.zig");
+const hash_object = @import("./hash-object.zig");
 
 const Io = std.Io;
 const SubCommands = enum {
     init,
-    // @"hash-object",
+    config,
+    @"hash-object",
 };
 
 const main_params = clap.parseParamsComptime(
@@ -95,6 +98,7 @@ pub fn main(in: std.process.Init) !void {
     };
     switch (command) {
         .init => try init.main(in.io, in.gpa, &iter),
-        // .@"hash-object" => try init.main(in.io, in.gpa, &iter, res),
+        .config => try config.main(in.io, in.gpa, &iter),
+        .@"hash-object" => try hash_object.main(in.io, in.gpa, &iter),
     }
 }

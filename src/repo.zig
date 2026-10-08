@@ -41,37 +41,75 @@ config: Config,
 //      the --file option, or by specifying a configuration scope with --system, --global, --local, or --worktree. For
 //      more, see the section called “OPTIONS” above.
 const Config = struct {
-    repository_format_version: u0 = 0,
+    repository_format_version: u8 = 0,
     file_mode: bool = true,
     bare: bool = false,
     log_all_ref_updates: bool = true,
+    symlinks: bool = false,
 
-    pub fn write(self: @This(), io: std.Io, git_dir: std.Io.Dir) !void {
-        const f = try git_dir.createFile(io, "config", .{});
-        try f.writeStreamingAll(io, "[core]\n");
+    const name_map = .{
+        .{ "repository_format_version", "repositoryformatversion" },
+        .{ "file_mode", "filemode" },
+        .{ "bare", "bare" },
+        .{ "log_all_ref_updates", "logallrefupdates" },
+    };
 
-        inline for (std.meta.fields(@TypeOf(self))) |field| {
-            try f.writeStreamingAll(io, "\t");
-            try f.writeStreamingAll(io, field.name);
-            try f.writeStreamingAll(io, " = ");
+    fn writeRenameHandler(comptime header: ?[]const u8, comptime field_name: ?[]const u8) ?[]const u8 {
+        if (header == null or !std.mem.eql(u8, header.?, "core") or field_name == null) return field_name;
 
-            const value = @field(self, field.name);
+        inline for (name_map) |kv| if (std.mem.eql(u8, field_name.?, kv[0])) return kv[1];
 
-            switch (field.type) {
-                u0 => {
-                    try f.writeStreamingAll(io, "0");
-                },
-                bool => {
-                    try f.writeStreamingAll(io, if (value) "true" else "false");
-                },
-                else => |t| @compileError("implement " ++ t.name),
+        return field_name;
+    }
+
+    fn readRenameHandler(arena: std.mem.Allocator, field: zigini.IniField) ?zigini.IniField {
+        _ = arena;
+        inline for (name_map) |kv| {
+            if (std.mem.eql(u8, field.key, kv[1])) {
+                std.debug.print("HANDLED {s}\n", .{kv[1]});
+                return .{
+                    .header = "",
+                    .key = kv[0],
+                    .value = field.value,
+                };
             }
-            try f.writeStreamingAll(io, "\n");
         }
+        return field;
+    }
+
+    pub fn write(self: @This(), io: std.Io, git_dir: std.Io.Dir, alloc: std.mem.Allocator) !void {
+        const f = try git_dir.createFile(io, "config", .{});
+        var fbuf: [std.heap.pageSize()]u8 = undefined;
+        var fwriter = f.writer(io, &fbuf);
+        const writer = &fwriter.interface;
+
+        var config_writer = zigini.Ini(@This()).init(alloc);
+        defer config_writer.deinit();
+        try zigini.writeFromStruct(self, writer, "core", .{
+            .renameHandler = writeRenameHandler,
+        });
+
+        try writer.flush();
+    }
+
+    pub fn read(alloc: std.mem.Allocator, io: std.Io, git_dir: std.Io.Dir) !@This() {
+        const f = try git_dir.openFile(io, "config", .{});
+        defer f.close(io);
+
+        var fbuf: [std.heap.pageSize()]u8 = undefined;
+        var freader = f.reader(io, &fbuf);
+        const reader = &freader.interface;
+
+        var config_reader = zigini.Ini(@This()).init(alloc);
+        defer config_reader.deinit();
+
+        return try config_reader.readToStruct(reader, .{
+            .fieldHandler = readRenameHandler,
+        });
     }
 };
 
-pub fn init(io: std.Io, gpa: std.mem.Allocator, args: Args) !@This() {
+pub fn init(io: std.Io, gpa: std.mem.Allocator, args: InitArgs) !@This() {
     const cwd = std.Io.Dir.cwd();
     const git_dir_path = try std.fs.path.resolve(gpa, &.{ args.positionals[0] orelse ".", ".git" });
     const config: Config = .{};
@@ -81,8 +119,22 @@ pub fn init(io: std.Io, gpa: std.mem.Allocator, args: Args) !@This() {
         try std.Io.Dir.createDirPath(cwd, io, git_dir_path);
         const git_dir = try std.Io.Dir.openDir(cwd, io, git_dir_path, .{});
         defer std.Io.Dir.close(git_dir, io);
-        try config.write(io, git_dir);
+        try config.write(io, git_dir, gpa);
     }
+
+    return .{
+        .git_dir = git_dir_path,
+        .common_dir = "",
+        .prefix = "",
+        .config = config,
+    };
+}
+
+pub fn open(io: std.Io, gpa: std.mem.Allocator) !@This() {
+    const cwd = std.Io.Dir.cwd();
+    const git_dir_path = try std.fs.path.resolve(gpa, &.{ ".", ".git" });
+    const git_dir = try std.Io.Dir.openDir(cwd, io, git_dir_path, .{});
+    const config = try Config.read(gpa, io, git_dir);
 
     return .{
         .git_dir = git_dir_path,
@@ -99,4 +151,5 @@ pub fn deinit(self: @This(), gpa: std.mem.Allocator) void {
 }
 
 const std = @import("std");
-const Args = @import("./init.zig").Args;
+const InitArgs = @import("./init.zig").Args;
+const zigini = @import("ini");
